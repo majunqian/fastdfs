@@ -11,22 +11,25 @@
 #ifndef _STORAGE_SYNC_H_
 #define _STORAGE_SYNC_H_
 
+#include "fastcommon/fc_list.h"
 #include "storage_func.h"
 
-#define STORAGE_OP_TYPE_SOURCE_CREATE_FILE	'C'  //upload file
-#define STORAGE_OP_TYPE_SOURCE_APPEND_FILE	'A'  //append file
-#define STORAGE_OP_TYPE_SOURCE_DELETE_FILE	'D'  //delete file
-#define STORAGE_OP_TYPE_SOURCE_UPDATE_FILE	'U'  //for whole file update such as metadata file
-#define STORAGE_OP_TYPE_SOURCE_MODIFY_FILE	'M'  //for part modify
-#define STORAGE_OP_TYPE_SOURCE_TRUNCATE_FILE	'T'  //truncate file
-#define STORAGE_OP_TYPE_SOURCE_CREATE_LINK	'L'  //create symbol link
-#define STORAGE_OP_TYPE_REPLICA_CREATE_FILE	'c'
-#define STORAGE_OP_TYPE_REPLICA_APPEND_FILE	'a'
-#define STORAGE_OP_TYPE_REPLICA_DELETE_FILE	'd'
-#define STORAGE_OP_TYPE_REPLICA_UPDATE_FILE	'u'
-#define STORAGE_OP_TYPE_REPLICA_MODIFY_FILE	'm'
-#define STORAGE_OP_TYPE_REPLICA_TRUNCATE_FILE	't'
-#define STORAGE_OP_TYPE_REPLICA_CREATE_LINK	'l'
+#define STORAGE_OP_TYPE_SOURCE_CREATE_FILE    'C'  //upload file
+#define STORAGE_OP_TYPE_SOURCE_APPEND_FILE    'A'  //append file
+#define STORAGE_OP_TYPE_SOURCE_DELETE_FILE    'D'  //delete file
+#define STORAGE_OP_TYPE_SOURCE_UPDATE_FILE    'U'  //for whole file update such as metadata file
+#define STORAGE_OP_TYPE_SOURCE_MODIFY_FILE    'M'  //for part modify
+#define STORAGE_OP_TYPE_SOURCE_TRUNCATE_FILE  'T'  //truncate file
+#define STORAGE_OP_TYPE_SOURCE_CREATE_LINK    'L'  //create symbol link
+#define STORAGE_OP_TYPE_SOURCE_RENAME_FILE    'R'  //rename appender file to normal file
+#define STORAGE_OP_TYPE_REPLICA_CREATE_FILE   'c'
+#define STORAGE_OP_TYPE_REPLICA_APPEND_FILE   'a'
+#define STORAGE_OP_TYPE_REPLICA_DELETE_FILE   'd'
+#define STORAGE_OP_TYPE_REPLICA_UPDATE_FILE   'u'
+#define STORAGE_OP_TYPE_REPLICA_MODIFY_FILE   'm'
+#define STORAGE_OP_TYPE_REPLICA_TRUNCATE_FILE 't'
+#define STORAGE_OP_TYPE_REPLICA_CREATE_LINK   'l'
+#define STORAGE_OP_TYPE_REPLICA_RENAME_FILE   'r'
 
 #define STORAGE_BINLOG_BUFFER_SIZE		64 * 1024
 #define STORAGE_BINLOG_LINE_SIZE		256
@@ -37,6 +40,7 @@ extern "C" {
 
 typedef struct
 {
+    struct fc_list_head link;
 	char storage_id[FDFS_STORAGE_ID_MAX_SIZE];
 	bool need_sync_old;
 	bool sync_old_done;
@@ -99,8 +103,14 @@ int storage_open_readable_binlog(StorageBinLogReader *pReader, \
 int storage_reader_init(FDFSStorageBrief *pStorage, StorageBinLogReader *pReader);
 void storage_reader_destroy(StorageBinLogReader *pReader);
 
-int storage_report_storage_status(const char *storage_id, \
+int storage_report_storage_status(const char *storage_id,
 		const char *ip_addr, const char status);
+
+int fdfs_binlog_compress_func(void *args);
+
+void storage_reader_add_to_list(StorageBinLogReader *pReader);
+
+void storage_reader_remove_from_list(StorageBinLogReader *pReader);
 
 #ifdef __cplusplus
 }

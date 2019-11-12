@@ -12,9 +12,10 @@
 #include <string.h>
 #include <errno.h>
 #include <signal.h>
+#include <netdb.h>
 #include <sys/types.h>
-#include "sockopt.h"
-#include "logger.h"
+#include "fastcommon/sockopt.h"
+#include "fastcommon/logger.h"
 #include "client_global.h"
 #include "fdfs_global.h"
 #include "fdfs_client.h"
@@ -25,8 +26,11 @@ static int list_all_groups(const char *group_name);
 
 static void usage(char *argv[])
 {
-	printf("Usage: %s <config_file> [-h <tracker_server>] [list|delete|set_trunk_server <group_name> " \
-		"[storage_id]]\n", argv[0]);
+	printf("Usage: %s <config_file> [-h <tracker_server>] "
+            "[list|delete|set_trunk_server <group_name> [storage_id]]\n"
+            "\tthe tracker server format: host[:port], "
+            "the tracker default port is %d\n\n",
+            argv[0], FDFS_TRACKER_SERVER_DEF_PORT);
 }
 
 int main(int argc, char *argv[])
@@ -115,21 +119,20 @@ int main(int argc, char *argv[])
 	else
 	{
 		int i;
-		char ip_addr[IP_ADDRESS_SIZE];
+        ConnectionInfo conn;
 
-		*ip_addr = '\0';
-		if (getIpaddrByName(tracker_server, ip_addr, sizeof(ip_addr)) \
-			 == INADDR_NONE)
+        if ((result=conn_pool_parse_server_info(tracker_server, &conn,
+                        FDFS_TRACKER_SERVER_DEF_PORT)) != 0)
 		{
-			printf("resolve ip address of tracker server: %s " \
-				"fail!\n", tracker_server);
-			return 2;
+			printf("resolve ip address of tracker server: %s "
+				"fail!, error info: %s\n", tracker_server, hstrerror(h_errno));
+			return result;
 		}
 
 		for (i=0; i<g_tracker_group.server_count; i++)
 		{
-			if (strcmp(g_tracker_group.servers[i].ip_addr, \
-					ip_addr) == 0)
+			if (fdfs_server_contain1(g_tracker_group.servers + i,
+					&conn) == 0)
 			{
 				g_tracker_group.server_index = i;
 				break;
@@ -143,7 +146,8 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	printf("server_count=%d, server_index=%d\n", g_tracker_group.server_count, g_tracker_group.server_index);
+	printf("server_count=%d, server_index=%d\n",
+            g_tracker_group.server_count, g_tracker_group.server_index);
 
 	pTrackerServer = tracker_get_connection();
 	if (pTrackerServer == NULL)
@@ -250,7 +254,7 @@ int main(int argc, char *argv[])
 		usage(argv);
 	}
 
-	tracker_disconnect_server_ex(pTrackerServer, true);
+	tracker_close_connection_ex(pTrackerServer, true);
 	fdfs_client_destroy();
 	return 0;
 }
@@ -348,8 +352,12 @@ static int list_storages(FDFSGroupStat *pGroupStat)
 			int second;
 			char szDelayTime[64];
 			
-			delay_seconds = (int)(max_last_source_update - \
+			delay_seconds = (int)(max_last_source_update -
 				pStorageStat->last_synced_timestamp);
+            if (delay_seconds < 0)
+            {
+                delay_seconds = 0;
+            }
 			day = delay_seconds / (24 * 3600);
 			remain_seconds = delay_seconds % (24 * 3600);
 			hour = remain_seconds / 3600;

@@ -15,12 +15,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "common_define.h"
+#include "fastcommon/common_define.h"
 #include "fdfs_define.h"
 #include "tracker_types.h"
 #include "client_global.h"
 #include "fdht_types.h"
-#include "local_ip_func.h"
+#include "fastcommon/local_ip_func.h"
 #include "trunk_shared.h"
 
 #ifdef WITH_HTTPD
@@ -56,6 +56,13 @@ typedef struct
 	int total_mb; //total spaces
 	int free_mb;  //free spaces
 } FDFSStorePathInfo;
+
+typedef struct
+{
+    signed char my_status;
+    signed char src_storage_status;
+    bool get_my_ip_done;
+} StorageStatusPerTracker;
 
 extern volatile bool g_continue_flag;
 
@@ -116,8 +123,8 @@ extern char g_sync_src_id[FDFS_STORAGE_ID_MAX_SIZE]; //the source storage server
 
 extern char g_group_name[FDFS_GROUP_NAME_MAX_LEN + 1];
 extern char g_my_server_id_str[FDFS_STORAGE_ID_MAX_SIZE]; //my server id string
-extern char g_tracker_client_ip[IP_ADDRESS_SIZE]; //storage ip as tracker client
-extern char g_last_storage_ip[IP_ADDRESS_SIZE];	//the last storage ip address
+extern FDFSMultiIP g_tracker_client_ip; //storage ip as tracker client
+extern FDFSMultiIP g_last_storage_ip;	//the last storage ip address
 
 extern LogContext g_access_log_context;
 
@@ -140,6 +147,8 @@ extern int g_namespace_len;
 extern int g_allow_ip_count;  /* -1 means match any ip address */
 extern in_addr_t *g_allow_ip_addrs;  /* sorted array, asc order */
 
+extern StorageStatusPerTracker *g_my_report_status;  //returned by tracker server
+
 extern gid_t g_run_by_gid;
 extern uid_t g_run_by_uid;
 
@@ -152,6 +161,9 @@ extern bool g_storage_ip_changed_auto_adjust;
 extern bool g_thread_kill_done;
 
 extern bool g_file_sync_skip_invalid_record;
+
+extern bool g_compress_binlog;
+extern TimeInfo g_compress_binlog_time;  //compress binlog time base
 
 extern int g_thread_stack_size;
 extern int g_upload_priority;
@@ -172,6 +184,9 @@ extern struct storage_nio_thread_data *g_nio_thread_data;  //network io thread d
 extern struct storage_dio_thread_data *g_dio_thread_data;  //disk io thread data
 
 int storage_cmp_by_server_id(const void *p1, const void *p2);
+
+int storage_insert_ip_addr_to_multi_ips(FDFSMultiIP *multi_ip,
+        const char *ip_addr, const int ips_limit);
 
 #ifdef __cplusplus
 }

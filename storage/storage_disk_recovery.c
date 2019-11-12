@@ -22,11 +22,11 @@
 #include <sys/statvfs.h>
 #include <sys/param.h>
 #include "fdfs_define.h"
-#include "logger.h"
+#include "fastcommon/logger.h"
 #include "fdfs_global.h"
-#include "sockopt.h"
-#include "avl_tree.h"
-#include "shared_func.h"
+#include "fastcommon/sockopt.h"
+#include "fastcommon/avl_tree.h"
+#include "fastcommon/shared_func.h"
 #include "tracker_types.h"
 #include "tracker_proto.h"
 #include "storage_global.h"
@@ -119,7 +119,7 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 {
 	int result;
 	int storage_count;
-	ConnectionInfo trackerServer;
+	TrackerServerInfo trackerServer;
 	ConnectionInfo *pTrackerConn;
 	FDFSGroupStat groupStat;
 	FDFSStorageInfo storageStats[FDFS_MAX_SERVERS_EACH_GROUP];
@@ -134,15 +134,15 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 		__LINE__);
 	while (g_continue_flag)
 	{
-		result = tracker_get_storage_max_status(&g_tracker_group, \
-                		g_group_name, g_tracker_client_ip, \
-				g_my_server_id_str, &saved_storage_status);
+		result = tracker_get_storage_max_status(&g_tracker_group,
+                g_group_name, g_tracker_client_ip.ips[0],
+                g_my_server_id_str, &saved_storage_status);
 		if (result == ENOENT)
 		{
 			logWarning("file: "__FILE__", line: %d, " \
 				"current storage: %s does not exist " \
 				"in tracker server", __LINE__, \
-				g_tracker_client_ip);
+				g_tracker_client_ip.ips[0]);
 			return ENOENT;
 		}
 
@@ -153,7 +153,7 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 				logInfo("file: "__FILE__", line: %d, " \
 					"current storage: %s 's status is %d" \
 					", does not need recovery", __LINE__, \
-					g_tracker_client_ip, \
+					g_tracker_client_ip.ips[0], \
 					saved_storage_status);
 				return ENOENT;
 			}
@@ -164,7 +164,7 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 				logWarning("file: "__FILE__", line: %d, " \
 					"current storage: %s 's status is %d" \
 					", does not need recovery", __LINE__, \
-					g_tracker_client_ip, saved_storage_status);
+					g_tracker_client_ip.ips[0], saved_storage_status);
 				return ENOENT;
 			}
 
@@ -187,7 +187,7 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 				g_group_name, &groupStat);
 		if (result != 0)
 		{
-			tracker_disconnect_server_ex(pTrackerConn, true);
+			tracker_close_connection_ex(pTrackerConn, true);
 			sleep(1);
 			continue;
 		}
@@ -198,7 +198,7 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 				"storage server count: %d in the group <= 0!",\
 				__LINE__, groupStat.count);
 
-			tracker_disconnect_server(pTrackerConn);
+			tracker_close_connection(pTrackerConn);
 			sleep(1);
 			continue;
 		}
@@ -209,7 +209,7 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 				"storage server count in the group = 1, " \
 				"does not need recovery", __LINE__);
 
-			tracker_disconnect_server(pTrackerConn);
+			tracker_close_connection(pTrackerConn);
 			return ENOENT;
 		}
 
@@ -221,13 +221,13 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 				"does not need recovery", __LINE__, \
 				g_fdfs_store_paths.count, groupStat.store_path_count);
 
-			tracker_disconnect_server(pTrackerConn);
+			tracker_close_connection(pTrackerConn);
 			return ENOENT;
 		}
 
 		if (groupStat.active_count <= 0)
 		{
-			tracker_disconnect_server(pTrackerConn);
+			tracker_close_connection(pTrackerConn);
 			sleep(5);
 			continue;
 		}
@@ -235,7 +235,7 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 		result = tracker_list_servers(pTrackerConn, \
                 		g_group_name, NULL, storageStats, \
 				FDFS_MAX_SERVERS_EACH_GROUP, &storage_count);
-		tracker_disconnect_server_ex(pTrackerConn, result != 0);
+		tracker_close_connection_ex(pTrackerConn, result != 0);
 		if (result != 0)
 		{
 			sleep(5);
@@ -263,8 +263,7 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 
 			if (pStorageStat->status == FDFS_STORAGE_STATUS_ACTIVE)
 			{
-				strcpy(pSrcStorage->ip_addr, \
-					pStorageStat->ip_addr);
+				strcpy(pSrcStorage->ip_addr, pStorageStat->ip_addr);
 				pSrcStorage->port = pStorageStat->storage_port;
 				break;
 			}
@@ -283,8 +282,8 @@ static int recovery_get_src_storage_server(ConnectionInfo *pSrcStorage)
 		return EINTR;
 	}
 
-	logDebug("file: "__FILE__", line: %d, " \
-		"disk recovery: get source storage server %s:%d", \
+	logDebug("file: "__FILE__", line: %d, "
+		"disk recovery: get source storage server %s:%d",
 		__LINE__, pSrcStorage->ip_addr, pSrcStorage->port);
 	return 0;
 }
@@ -511,19 +510,97 @@ static int recovery_reader_check_init(const char *pBasePath, \
     return recovery_reader_init(pBasePath, pReader);
 }
 
+static int recovery_download_file_to_local(StorageBinLogRecord *pRecord,
+		ConnectionInfo *pTrackerServer, ConnectionInfo *pStorageConn)
+{
+	int result;
+    bool bTrunkFile;
+	char local_filename[MAX_PATH_SIZE];
+	char tmp_filename[MAX_PATH_SIZE + 32];
+    char *download_filename;
+	int64_t file_size;
+
+    if (fdfs_is_trunk_file(pRecord->filename, pRecord->filename_len))
+    {
+        FDFSTrunkFullInfo trunk_info;
+        char *pTrunkPathEnd;
+        char *pLocalFilename;
+
+        bTrunkFile = true;
+        if (fdfs_decode_trunk_info(pRecord->store_path_index,
+                    pRecord->true_filename, pRecord->true_filename_len,
+                    &trunk_info) != 0)
+        {
+            return -EINVAL;
+        }
+
+        trunk_get_full_filename(&trunk_info,
+                local_filename, sizeof(local_filename));
+
+        pTrunkPathEnd = strrchr(pRecord->filename, '/');
+        pLocalFilename = strrchr(local_filename, '/');
+        if (pTrunkPathEnd == NULL || pLocalFilename == NULL)
+        {
+            return -EINVAL;
+        }
+        sprintf(pTrunkPathEnd + 1, "%s", pLocalFilename + 1);
+    }
+    else
+    {
+        bTrunkFile = false;
+        sprintf(local_filename, "%s/data/%s",
+                g_fdfs_store_paths.paths[pRecord->store_path_index],
+                pRecord->true_filename);
+    }
+
+    if (access(local_filename, F_OK) == 0)
+    {
+        sprintf(tmp_filename, "%s.recovery.tmp", local_filename);
+        download_filename = tmp_filename;
+    }
+    else
+    {
+        download_filename = local_filename;
+    }
+
+    result = storage_download_file_to_file(pTrackerServer,
+            pStorageConn, g_group_name, pRecord->filename,
+            download_filename, &file_size);
+    if (result == 0)
+    {
+        if (download_filename != local_filename)
+        {
+            if (rename(download_filename, local_filename) != 0)
+            {
+                logError("file: "__FILE__", line: %d, "
+                        "rename file %s to %s fail, "
+                        "errno: %d, error info: %s", __LINE__,
+                        download_filename, local_filename,
+                        errno, STRERROR(errno));
+                return errno != 0 ? errno : EPERM;
+            }
+        }
+        if (!bTrunkFile)
+        {
+            set_file_utimes(local_filename, pRecord->timestamp);
+        }
+    }
+
+    return result;
+}
+
 static int storage_do_recovery(const char *pBasePath, StorageBinLogReader *pReader, \
 		ConnectionInfo *pSrcStorage)
 {
+	TrackerServerInfo trackerServer;
 	ConnectionInfo *pTrackerServer;
 	ConnectionInfo *pStorageConn;
-	FDFSTrunkFullInfo trunk_info;
 	StorageBinLogRecord record;
 	int record_length;
 	int result;
 	int log_level;
 	int count;
 	int store_path_index;
-	int64_t file_size;
 	int64_t total_count;
 	int64_t success_count;
 	int64_t noent_count;
@@ -531,15 +608,23 @@ static int storage_do_recovery(const char *pBasePath, StorageBinLogReader *pRead
 	char local_filename[MAX_PATH_SIZE];
 	char src_filename[MAX_PATH_SIZE];
 
-	pTrackerServer = g_tracker_group.servers;
+	pTrackerServer = tracker_get_connection_r(&trackerServer, &result);
+    if (pTrackerServer == NULL)
+    {
+        logError("file: "__FILE__", line: %d, "
+                "get tracker connection fail, result: %d",
+                __LINE__, result);
+        return result;
+    }
+
 	count = 0;
 	total_count = 0;
 	success_count = 0;
     noent_count = 0;
 	result = 0;
 
-	logInfo("file: "__FILE__", line: %d, " \
-		"disk recovery: recovering files of data path: %s ...", \
+	logInfo("file: "__FILE__", line: %d, "
+		"disk recovery: recovering files of data path: %s ...",
 		__LINE__, pBasePath);
 
 	bContinueFlag = true;
@@ -549,7 +634,7 @@ static int storage_do_recovery(const char *pBasePath, StorageBinLogReader *pRead
     {
         break;
     }
-	if ((pStorageConn=tracker_connect_server(pSrcStorage, &result)) == NULL)
+	if ((pStorageConn=tracker_make_connection(pSrcStorage, &result)) == NULL)
 	{
 		sleep(5);
 		continue;
@@ -572,59 +657,16 @@ static int storage_do_recovery(const char *pBasePath, StorageBinLogReader *pRead
 		if (record.op_type == STORAGE_OP_TYPE_SOURCE_CREATE_FILE
 		 || record.op_type == STORAGE_OP_TYPE_REPLICA_CREATE_FILE)
 		{
-			bool bTrunkFile;
-
-			if (fdfs_is_trunk_file(record.filename, \
-					record.filename_len))
-			{
-			char *pTrunkPathEnd;
-			char *pLocalFilename;
-
-			bTrunkFile = true;
-			if (fdfs_decode_trunk_info(record.store_path_index, \
-				record.true_filename, record.true_filename_len,\
-				&trunk_info) != 0)
-			{
-				pReader->binlog_offset += record_length;
-				count++;
-				continue;
-			}
-
-			trunk_get_full_filename(&trunk_info, \
-                		local_filename, sizeof(local_filename));
-
-			pTrunkPathEnd = strrchr(record.filename, '/');
-			pLocalFilename = strrchr(local_filename, '/');
-			if (pTrunkPathEnd == NULL || pLocalFilename == NULL)
-			{
-				pReader->binlog_offset += record_length;
-				count++;
-				continue;
-			}
-			sprintf(pTrunkPathEnd + 1, "%s", pLocalFilename + 1);
-			}
-			else
-			{
-			bTrunkFile = false;
-			sprintf(local_filename, "%s/data/%s", \
-				g_fdfs_store_paths.paths[record.store_path_index], \
-				record.true_filename);
-			}
-
-			result = storage_download_file_to_file(pTrackerServer, \
-					pStorageConn, g_group_name, \
-					record.filename, local_filename, \
-					&file_size);
+            result = recovery_download_file_to_local(&record,
+                    pTrackerServer, pStorageConn);
 			if (result == 0)
 			{
-				if (!bTrunkFile)
-				{
-					set_file_utimes(local_filename, \
-						record.timestamp);
-				}
-
 				success_count++;
 			}
+			else if (result == -EINVAL)
+			{
+                result = 0;
+            }
 			else if (result == ENOENT)
 			{
                 result = 0;
@@ -729,7 +771,7 @@ static int storage_do_recovery(const char *pBasePath, StorageBinLogReader *pRead
 		}
 	}
 
-	tracker_disconnect_server_ex(pStorageConn, result != 0);
+	tracker_close_connection_ex(pStorageConn, result != 0);
     recovery_write_to_mark_file(pBasePath, pReader);
     if (bContinueFlag)
     {
@@ -751,6 +793,8 @@ static int storage_do_recovery(const char *pBasePath, StorageBinLogReader *pRead
 		sleep(5);
 	}
 	}
+
+    tracker_close_connection_ex(pTrackerServer, true);
 
 	if (result == 0)
 	{
@@ -817,7 +861,7 @@ int storage_disk_recovery_restore(const char *pBasePath)
 	while (g_continue_flag)
 	{
 		if (storage_report_storage_status(g_my_server_id_str, \
-			g_tracker_client_ip, saved_storage_status) == 0)
+			g_tracker_client_ip.ips[0], saved_storage_status) == 0)
 		{
 			break;
 		}
@@ -1103,7 +1147,7 @@ int storage_disk_recovery_start(const int store_path_index)
 	while (g_continue_flag)
 	{
 		if (storage_report_storage_status(g_my_server_id_str, \
-			g_tracker_client_ip, FDFS_STORAGE_STATUS_RECOVERY) == 0)
+			g_tracker_client_ip.ips[0], FDFS_STORAGE_STATUS_RECOVERY) == 0)
 		{
 			break;
 		}
@@ -1114,13 +1158,13 @@ int storage_disk_recovery_start(const int store_path_index)
 		return EINTR;
 	}
 
-	if ((pStorageConn=tracker_connect_server(&srcStorage, &result)) == NULL)
+	if ((pStorageConn=tracker_make_connection(&srcStorage, &result)) == NULL)
 	{
 		return result;
 	}
 
 	result = storage_do_fetch_binlog(pStorageConn, store_path_index);
-	tracker_disconnect_server_ex(pStorageConn, true);
+	tracker_close_connection_ex(pStorageConn, true);
 	if (result != 0)
 	{
 		return result;

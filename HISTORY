@@ -1,8 +1,38 @@
 
-Version 5.12  2017-10-16
+Version 6.02  2019-11-11
+ * get_file_info calculate CRC32 for appender file type
+ * disk recovery download file to local temp file then rename it
+   when the local file exists
+ * support regenerate filename for appender file
+   NOTE: the regenerated file will be a normal file!
+
+Version 6.01  2019-10-25
+ * compress and uncompress binlog file by gzip when need,
+   config items in storage.conf: compress_binlog and compress_binlog_time
+ * bugfix: must check and create data path before write_to_pid_file
+   in fdfs_storaged.c
+
+Version 6.00  2019-10-16
+ * tracker and storage server support dual IPs
+   1. you can config dual tracker IPs in storage.conf and client.conf,
+      the configuration item name is "tracker_server"
+   2. you can config dual storage IPs in storage_ids.conf
+  more detail please see the config files.
+
+  NOTE: you MUST upgrade libfastcommon to V1.41 or later
+        the tracker and storage server must upgrade together
+
+ * storage server get IP from tracker server
+ * storage server report current tracker IP to the tracker server when join
+ * tracker server check tracker list when storage server join
+ * use socketCreateExAuto and socketClientExAuto exported by libfastcommon
+
+Version 5.12  2018-06-07
  * code refine for rare case
  * replace print format OFF_PRINTF_FORMAT to PRId64
  * php_ext fix zend_object_store_get_object call in php5.5
+ * make.sh uses macros define in /usr/include/fastcommon/_os_define.h
+ * correct CRC32, you must upgrade libfastcommon to V1.38 or later
 
 Version 5.11  2017-05-26
  * bug fixed: file_offset has no effect when use trunk file

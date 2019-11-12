@@ -23,14 +23,14 @@
 #include <errno.h>
 #include <time.h>
 #include "fdfs_define.h"
-#include "logger.h"
+#include "fastcommon/logger.h"
 #include "fdfs_global.h"
-#include "sockopt.h"
-#include "shared_func.h"
-#include "pthread_func.h"
-#include "sched_thread.h"
-#include "ini_file_reader.h"
-#include "connection_pool.h"
+#include "fastcommon/sockopt.h"
+#include "fastcommon/shared_func.h"
+#include "fastcommon/pthread_func.h"
+#include "fastcommon/sched_thread.h"
+#include "fastcommon/ini_file_reader.h"
+#include "fastcommon/connection_pool.h"
 #include "tracker_types.h"
 #include "tracker_proto.h"
 #include "fdfs_shared_func.h"
@@ -174,28 +174,27 @@ static int storage_do_get_group_name(ConnectionInfo *pTrackerServer)
 
 static int storage_get_group_name_from_tracker()
 {
-	ConnectionInfo *pTrackerServer;
-	ConnectionInfo *pServerEnd;
+	TrackerServerInfo *pTrackerServer;
+	TrackerServerInfo *pServerEnd;
 	ConnectionInfo *pTrackerConn;
-	ConnectionInfo tracker_server;
+	TrackerServerInfo tracker_server;
 	int result;
 
 	result = ENOENT;
 	pServerEnd = g_tracker_group.servers + g_tracker_group.server_count;
-	for (pTrackerServer=g_tracker_group.servers; \
+	for (pTrackerServer=g_tracker_group.servers;
 		pTrackerServer<pServerEnd; pTrackerServer++)
 	{
-		memcpy(&tracker_server, pTrackerServer, \
-			sizeof(ConnectionInfo));
-		tracker_server.sock = -1;
-        if ((pTrackerConn=tracker_connect_server(&tracker_server, \
+		memcpy(&tracker_server, pTrackerServer, sizeof(TrackerServerInfo));
+        fdfs_server_sock_reset(&tracker_server);
+        if ((pTrackerConn=tracker_connect_server(&tracker_server,
 			&result)) == NULL)
 		{
 			continue;
 		}
 
         result = storage_do_get_group_name(pTrackerConn);
-		tracker_disconnect_server_ex(pTrackerConn, \
+		tracker_close_connection_ex(pTrackerConn,
 			result != 0 && result != ENOENT);
 		if (result == 0)
 		{
@@ -209,8 +208,9 @@ static int storage_get_group_name_from_tracker()
 static int tracker_get_my_server_id()
 {
 	struct in_addr ip_addr;
+    char ip_str[256];
 
-	if (inet_pton(AF_INET, g_tracker_client_ip, &ip_addr) == 1)
+	if (inet_pton(AF_INET, g_tracker_client_ip.ips[0], &ip_addr) == 1)
 	{
 		g_server_id_in_filename = ip_addr.s_addr;
 	}
@@ -218,7 +218,7 @@ static int tracker_get_my_server_id()
 	{
 		logError("file: "__FILE__", line: %d, " \
 			"call inet_pton for ip: %s fail", \
-		__LINE__,g_tracker_client_ip);
+		__LINE__, g_tracker_client_ip.ips[0]);
 		g_server_id_in_filename = INADDR_NONE;
 	}
 
@@ -233,9 +233,10 @@ static int tracker_get_my_server_id()
 			return errno != 0 ? errno : ECONNREFUSED;
 		}
 
-		result = tracker_get_storage_id(pTrackerServer, \
-			g_group_name, g_tracker_client_ip, g_my_server_id_str);
-		tracker_disconnect_server_ex(pTrackerServer, result != 0);
+		result = tracker_get_storage_id(pTrackerServer,
+			g_group_name, g_tracker_client_ip.ips[0],
+            g_my_server_id_str);
+		tracker_close_connection_ex(pTrackerServer, result != 0);
 		if (result != 0)
 		{
 			return result;
@@ -248,14 +249,16 @@ static int tracker_get_my_server_id()
 	}
 	else
 	{
-		snprintf(g_my_server_id_str, sizeof(g_my_server_id_str), "%s", \
-			g_tracker_client_ip);
+		snprintf(g_my_server_id_str, sizeof(g_my_server_id_str), "%s",
+			g_tracker_client_ip.ips[0]);
 	}
 
-	logInfo("file: "__FILE__", line: %d, " \
-		"tracker_client_ip: %s, my_server_id_str: %s, " \
-		"g_server_id_in_filename: %d", __LINE__, \
-		g_tracker_client_ip, g_my_server_id_str, g_server_id_in_filename);
+    fdfs_multi_ips_to_string(&g_tracker_client_ip,
+            ip_str, sizeof(ip_str));
+	logInfo("file: "__FILE__", line: %d, "
+		"tracker_client_ip: %s, my_server_id_str: %s, "
+		"g_server_id_in_filename: %d", __LINE__,
+		ip_str, g_my_server_id_str, g_server_id_in_filename);
 	return 0;
 }
 
@@ -626,6 +629,7 @@ int storage_write_to_sync_ini_file()
 {
 	char full_filename[MAX_PATH_SIZE];
 	char buff[512];
+    char ip_str[256];
 	int fd;
 	int len;
 
@@ -641,6 +645,8 @@ int storage_write_to_sync_ini_file()
 		return errno != 0 ? errno : ENOENT;
 	}
 
+    fdfs_multi_ips_to_string(&g_tracker_client_ip,
+            ip_str, sizeof(ip_str));
 	len = sprintf(buff, "%s=%d\n" \
 		"%s=%d\n"  \
 		"%s=%s\n"  \
@@ -654,7 +660,7 @@ int storage_write_to_sync_ini_file()
 		INIT_ITEM_SYNC_OLD_DONE, g_sync_old_done, \
 		INIT_ITEM_SYNC_SRC_SERVER, g_sync_src_id, \
 		INIT_ITEM_SYNC_UNTIL_TIMESTAMP, g_sync_until_timestamp, \
-		INIT_ITEM_LAST_IP_ADDRESS, g_tracker_client_ip, \
+		INIT_ITEM_LAST_IP_ADDRESS, ip_str, \
 		INIT_ITEM_LAST_SERVER_PORT, g_last_server_port, \
 		INIT_ITEM_LAST_HTTP_PORT, g_last_http_port,
 		INIT_ITEM_CURRENT_TRUNK_FILE_ID, g_current_trunk_file_id, \
@@ -678,12 +684,36 @@ int storage_write_to_sync_ini_file()
 	return 0;
 }
 
+int storage_check_and_make_data_path()
+{
+    char data_path[MAX_PATH_SIZE];
+    snprintf(data_path, sizeof(data_path), "%s/data",
+            g_fdfs_base_path);
+    if (!fileExists(data_path))
+    {
+        if (mkdir(data_path, 0755) != 0)
+        {
+            logError("file: "__FILE__", line: %d, "
+                    "mkdir \"%s\" fail, "
+                    "errno: %d, error info: %s",
+                    __LINE__, data_path,
+                    errno, STRERROR(errno));
+            return errno != 0 ? errno : EPERM;
+        }
+
+        STORAGE_CHOWN(data_path, geteuid(), getegid())
+    }
+
+    return 0;
+}
+
 static int storage_check_and_make_data_dirs()
 {
 	int result;
 	int i;
 	char data_path[MAX_PATH_SIZE];
 	char full_filename[MAX_PATH_SIZE];
+    char error_info[256];
 	bool pathCreated;
 
 	snprintf(data_path, sizeof(data_path), "%s/data", \
@@ -753,8 +783,8 @@ static int storage_check_and_make_data_dirs()
 				&iniContext);
 		if (pValue != NULL)
 		{
-			snprintf(g_last_storage_ip, sizeof(g_last_storage_ip), \
-				"%s", pValue);
+            fdfs_parse_multi_ips(pValue, &g_last_storage_ip,
+                    error_info, sizeof(error_info));
 		}
 
 		pValue = iniGetStrValue(NULL, INIT_ITEM_LAST_SERVER_PORT, \
@@ -813,21 +843,10 @@ static int storage_check_and_make_data_dirs()
 	}
 	else
 	{
-		if (!fileExists(data_path))
-		{
-			if (mkdir(data_path, 0755) != 0)
-			{
-				logError("file: "__FILE__", line: %d, " \
-					"mkdir \"%s\" fail, " \
-					"errno: %d, error info: %s", \
-					__LINE__, data_path, \
-					errno, STRERROR(errno));
-				return errno != 0 ? errno : EPERM;
-			}
-
-			STORAGE_CHOWN(data_path, geteuid(), getegid())
-		}
-
+        if ((result=storage_check_and_make_data_path()) != 0)
+        {
+			return result;
+        }
 		g_last_server_port = g_server_port;
 		g_last_http_port = g_http_port;
 		g_storage_join_time = g_current_time;
@@ -876,8 +895,8 @@ static int storage_check_and_make_data_dirs()
 static int storage_make_data_dirs(const char *pBasePath, bool *pathCreated)
 {
 	char data_path[MAX_PATH_SIZE];
-	char dir_name[9];
-	char sub_name[9];
+	char dir_name[16];
+	char sub_name[16];
 	char min_sub_path[16];
 	char max_sub_path[16];
 	int i, k;
@@ -912,10 +931,11 @@ static int storage_make_data_dirs(const char *pBasePath, bool *pathCreated)
 		return errno != 0 ? errno : ENOENT;
 	}
 
-	sprintf(min_sub_path, FDFS_STORAGE_DATA_DIR_FORMAT"/"FDFS_STORAGE_DATA_DIR_FORMAT,
-			0, 0);
-	sprintf(max_sub_path, FDFS_STORAGE_DATA_DIR_FORMAT"/"FDFS_STORAGE_DATA_DIR_FORMAT,
-			g_subdir_count_per_path-1, g_subdir_count_per_path-1);
+	sprintf(min_sub_path, FDFS_STORAGE_DATA_DIR_FORMAT"/"
+            FDFS_STORAGE_DATA_DIR_FORMAT, 0, 0);
+	sprintf(max_sub_path, FDFS_STORAGE_DATA_DIR_FORMAT"/"
+            FDFS_STORAGE_DATA_DIR_FORMAT, g_subdir_count_per_path - 1,
+            g_subdir_count_per_path - 1);
 	if (fileExists(min_sub_path) && fileExists(max_sub_path))
 	{
 		return 0;
@@ -1049,6 +1069,66 @@ void storage_set_access_log_header(struct log_context *pContext)
     log_header(pContext, STORAGE_ACCESS_HEADER_STR, STORAGE_ACCESS_HEADER_LEN);
 }
 
+static int storage_check_tracker_ipaddr(const char *filename)
+{
+    TrackerServerInfo *pServer;
+    TrackerServerInfo *pEnd;
+	ConnectionInfo *conn;
+	ConnectionInfo *conn_end;
+
+    pEnd = g_tracker_group.servers + g_tracker_group.server_count;
+    for (pServer=g_tracker_group.servers; pServer<pEnd; pServer++)
+    {
+        conn_end = pServer->connections + pServer->count;
+        for (conn=pServer->connections; conn<conn_end; conn++)
+        {
+            //logInfo("server=%s:%d\n", conn->ip_addr, conn->port);
+            if (strcmp(conn->ip_addr, "127.0.0.1") == 0)
+            {
+                logError("file: "__FILE__", line: %d, "
+                        "conf file \"%s\", tracker: \"%s:%d\" is invalid, "
+                        "tracker server ip can't be 127.0.0.1",
+                        __LINE__, filename, conn->ip_addr, conn->port);
+                return EINVAL;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int init_my_status_per_tracker()
+{
+    int bytes;
+	TrackerServerInfo *pTrackerServer;
+	TrackerServerInfo *pServerEnd;
+    StorageStatusPerTracker *pReportStatus;
+
+    bytes = sizeof(StorageStatusPerTracker) * g_tracker_group.server_count;
+	g_my_report_status = (StorageStatusPerTracker *)malloc(bytes);
+	if (g_my_report_status == NULL)
+	{
+		logError("file: "__FILE__", line: %d, "
+			"malloc %d bytes fail, "
+			"errno: %d, error info: %s", __LINE__,
+            bytes, errno, STRERROR(errno));
+		return errno != 0 ? errno : ENOMEM;
+	}
+	memset(g_my_report_status, 0, bytes);
+
+    pReportStatus = g_my_report_status;
+	pServerEnd = g_tracker_group.servers + g_tracker_group.server_count;
+	for (pTrackerServer=g_tracker_group.servers; pTrackerServer<pServerEnd;
+		pTrackerServer++)
+	{
+        pReportStatus->my_status = -1;
+        pReportStatus->src_storage_status = -1;
+        pReportStatus++;
+    }
+
+    return 0;
+}
+
 int storage_func_init(const char *filename, \
 		char *bind_addr, const int addr_size)
 {
@@ -1070,8 +1150,6 @@ int storage_func_init(const char *filename, \
 	int64_t buff_size;
 	int64_t rotate_access_log_size;
 	int64_t rotate_error_log_size;
-	ConnectionInfo *pServer;
-	ConnectionInfo *pEnd;
 
 	/*
 	while (nThreadCount > 0)
@@ -1181,23 +1259,7 @@ int storage_func_init(const char *filename, \
 			break;
 		}
 
-		pEnd = g_tracker_group.servers + g_tracker_group.server_count;
-		for (pServer=g_tracker_group.servers; pServer<pEnd; pServer++)
-		{
-			//printf("server=%s:%d\n", pServer->ip_addr, pServer->port);
-			if (strcmp(pServer->ip_addr, "127.0.0.1") == 0)
-			{
-				logError("file: "__FILE__", line: %d, " \
-					"conf file \"%s\", " \
-					"tracker: \"%s:%d\" is invalid, " \
-					"tracker server ip can't be 127.0.0.1",\
-					__LINE__, filename, pServer->ip_addr, \
-					pServer->port);
-				result = EINVAL;
-				break;
-			}
-		}
-		if (result != 0)
+		if ((result=storage_check_tracker_ipaddr(filename)) != 0)
 		{
 			break;
 		}
@@ -1736,6 +1798,14 @@ int storage_func_init(const char *filename, \
 		g_file_sync_skip_invalid_record = iniGetBoolValue(NULL, \
 			"file_sync_skip_invalid_record", &iniContext, false);
 
+		g_compress_binlog = iniGetBoolValue(NULL,
+			"compress_binlog", &iniContext, false);
+		if ((result=get_time_item_from_conf(&iniContext,
+			"compress_binlog_time", &g_compress_binlog_time, 1, 30)) != 0)
+		{
+			break;
+		}
+
 		if ((result=fdfs_connection_pool_init(filename, &iniContext)) != 0)
 		{
 			break;
@@ -1777,7 +1847,7 @@ int storage_func_init(const char *filename, \
 			"work_threads=%d, "    \
 			"disk_rw_separated=%d, disk_reader_threads=%d, " \
 			"disk_writer_threads=%d, " \
-			"buff_size=%dKB, heart_beat_interval=%ds, " \
+			"buff_size=%d KB, heart_beat_interval=%ds, " \
 			"stat_report_interval=%ds, tracker_server_count=%d, " \
 			"sync_wait_msec=%dms, sync_interval=%dms, " \
 			"sync_start_time=%02d:%02d, sync_end_time=%02d:%02d, "\
@@ -1804,7 +1874,9 @@ int storage_func_init(const char *filename, \
 			"log_file_keep_days=%d, " \
 			"file_sync_skip_invalid_record=%d, " \
 			"use_connection_pool=%d, " \
-			"g_connection_pool_max_idle_time=%ds", \
+			"g_connection_pool_max_idle_time=%ds, " \
+			"compress_binlog=%d, " \
+			"compress_binlog_time=%02d:%02d", \
 			g_fdfs_version.major, g_fdfs_version.minor, \
 			g_fdfs_base_path, g_fdfs_store_paths.count, \
 			g_subdir_count_per_path, \
@@ -1839,7 +1911,9 @@ int storage_func_init(const char *filename, \
 			g_access_log_context.rotate_size, \
 			g_log_context.rotate_size, g_log_file_keep_days, \
 			g_file_sync_skip_invalid_record, \
-			g_use_connection_pool, g_connection_pool_max_idle_time);
+			g_use_connection_pool, g_connection_pool_max_idle_time, \
+            g_compress_binlog, g_compress_binlog_time.hour,   \
+            g_compress_binlog_time.minute);
 
 #ifdef WITH_HTTPD
 		if (!g_http_params.disabled)
@@ -1869,6 +1943,11 @@ int storage_func_init(const char *filename, \
 	iniFreeContext(&iniContext);
 
 	if (result != 0)
+	{
+		return result;
+	}
+
+    if ((result=init_my_status_per_tracker()) != 0)
 	{
 		return result;
 	}
@@ -1992,6 +2071,115 @@ bool storage_id_is_myself(const char *storage_id)
 		return is_local_host_ip(storage_id);
 	}
 }
+
+static int storage_get_my_ip_from_tracker(ConnectionInfo *conn,
+        char *ip_addrs, const int buff_size)
+{
+	char out_buff[sizeof(TrackerHeader) + FDFS_GROUP_NAME_MAX_LEN];
+	TrackerHeader *pHeader;
+	int result;
+    int64_t in_bytes;
+
+	memset(out_buff, 0, sizeof(out_buff));
+	pHeader = (TrackerHeader *)out_buff;
+
+	long2buff(FDFS_GROUP_NAME_MAX_LEN, pHeader->pkg_len);
+	pHeader->cmd = TRACKER_PROTO_CMD_STORAGE_GET_MY_IP;
+	strcpy(out_buff + sizeof(TrackerHeader), g_group_name);
+	if((result=tcpsenddata_nb(conn->sock, out_buff,
+		sizeof(out_buff), g_fdfs_network_timeout)) != 0)
+	{
+		logError("file: "__FILE__", line: %d, "
+			"tracker server %s:%d, send data fail, "
+			"errno: %d, error info: %s.",
+			__LINE__, conn->ip_addr, conn->port,
+			result, STRERROR(result));
+		return result;
+	}
+
+    if ((result=fdfs_recv_response(conn, &ip_addrs,
+                    buff_size - 1, &in_bytes)) != 0)
+    {
+		logError("file: "__FILE__", line: %d, "
+			"tracker server %s:%d, recv response fail, "
+			"errno: %d, error info: %s.",
+			__LINE__, conn->ip_addr, conn->port,
+			result, STRERROR(result));
+		return result;
+    }
+
+    *(ip_addrs + in_bytes) = '\0';
+    return 0;
+}
+
+int storage_set_tracker_client_ips(ConnectionInfo *conn,
+        const int tracker_index)
+{
+    char my_ip_addrs[256];
+    char error_info[256];
+    FDFSMultiIP multi_ip;
+	int result;
+	int i;
+
+    if (g_my_report_status[tracker_index].get_my_ip_done)
+    {
+        return 0;
+    }
+
+    if ((result=storage_get_my_ip_from_tracker(conn, my_ip_addrs,
+                    sizeof(my_ip_addrs))) != 0)
+    {
+        return result;
+    }
+
+    if ((result=fdfs_parse_multi_ips_ex(my_ip_addrs, &multi_ip,
+                    error_info, sizeof(error_info), false)) != 0)
+    {
+        return result;
+    }
+
+    for (i = 0; i < multi_ip.count; i++)
+    {
+        result = storage_insert_ip_addr_to_multi_ips(&g_tracker_client_ip,
+                multi_ip.ips[i], multi_ip.count);
+        if (result == 0)
+        {
+            if ((result=fdfs_check_and_format_ips(&g_tracker_client_ip,
+                        error_info, sizeof(error_info))) != 0)
+            {
+                logCrit("file: "__FILE__", line: %d, "
+                        "as a client of tracker server %s:%d, "
+                        "my ip: %s not valid, error info: %s. "
+                        "program exit!", __LINE__,
+                        conn->ip_addr, conn->port,
+                        multi_ip.ips[i], error_info);
+
+                return result;
+            }
+
+            insert_into_local_host_ip(multi_ip.ips[i]);
+        }
+        else if (result != EEXIST)
+        {
+            char ip_str[256];
+
+            fdfs_multi_ips_to_string(&g_tracker_client_ip,
+                    ip_str, sizeof(ip_str));
+            logError("file: "__FILE__", line: %d, "
+                    "as a client of tracker server %s:%d, "
+                    "my ip: %s not consistent with client ips: %s "
+                    "of other tracker client. program exit!", __LINE__,
+                    conn->ip_addr, conn->port,
+                    multi_ip.ips[i], ip_str);
+
+            return result;
+        }
+    }
+
+    g_my_report_status[tracker_index].get_my_ip_done = true;
+    return 0;
+}
+
 
 /*
 int write_serialized(int fd, const char *buff, size_t count, const bool bSync)

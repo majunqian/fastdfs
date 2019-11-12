@@ -10,12 +10,14 @@
 
 #include "tracker_types.h"
 #include "client_global.h"
-#include "ini_file_reader.h"
+#include "fastcommon/ini_file_reader.h"
 
 #ifndef _CLIENT_FUNC_H_
 #define _CLIENT_FUNC_H_
 
 typedef struct {
+    short file_type;
+    bool get_from_server;
 	time_t create_timestamp;
 	int crc32;
 	int source_id;   //source storage id

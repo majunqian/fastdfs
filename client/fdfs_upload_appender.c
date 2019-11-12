@@ -13,7 +13,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "fdfs_client.h"
-#include "logger.h"
+#include "fastcommon/logger.h"
 
 int main(int argc, char *argv[])
 {
@@ -73,14 +73,14 @@ int main(int argc, char *argv[])
 			"error no: %d, error info: %s\n", \
 			result, STRERROR(result));
 
-		tracker_disconnect_server_ex(pTrackerServer, true);
+		tracker_close_connection_ex(pTrackerServer, true);
 		fdfs_client_destroy();
 		return result;
 	}
 
 	printf("%s\n", file_id);
 
-	tracker_disconnect_server_ex(pTrackerServer, true);
+	tracker_close_connection_ex(pTrackerServer, true);
 	fdfs_client_destroy();
 
 	return 0;

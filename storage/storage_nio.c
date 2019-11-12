@@ -21,16 +21,16 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <pthread.h>
-#include "shared_func.h"
-#include "sched_thread.h"
-#include "logger.h"
-#include "sockopt.h"
-#include "fast_task_queue.h"
+#include "fastcommon/shared_func.h"
+#include "fastcommon/sched_thread.h"
+#include "fastcommon/logger.h"
+#include "fastcommon/sockopt.h"
+#include "fastcommon/fast_task_queue.h"
 #include "tracker_types.h"
 #include "tracker_proto.h"
 #include "storage_global.h"
 #include "storage_service.h"
-#include "ioevent_loop.h"
+#include "fastcommon/ioevent_loop.h"
 #include "storage_dio.h"
 #include "storage_nio.h"
 
@@ -267,23 +267,35 @@ static void client_sock_read(int sock, short event, void *arg)
 
 	if (event & IOEVENT_TIMEOUT)
 	{
-		if (pClientInfo->total_offset == 0 && pTask->req_count > 0)
+		if (pClientInfo->total_offset == 0)
 		{
-			pTask->event.timer.expires = g_current_time +
-				g_fdfs_network_timeout;
-			fast_timer_add(&pTask->thread_data->timer,
-				&pTask->event.timer);
+            if (pTask->req_count > 0)
+            {
+                pTask->event.timer.expires = g_current_time +
+                    g_fdfs_network_timeout;
+                fast_timer_add(&pTask->thread_data->timer,
+                        &pTask->event.timer);
+            }
+            else
+            {
+                logWarning("file: "__FILE__", line: %d, "
+                        "client ip: %s, recv timeout. "
+                        "after the connection is established, "
+                        "you must send a request before %ds timeout, "
+                        "maybe connections leak in you application.",
+                        __LINE__, pTask->client_ip, g_fdfs_network_timeout);
+                task_finish_clean_up(pTask);
+            }
 		}
 		else
-		{
-			logError("file: "__FILE__", line: %d, " \
-				"client ip: %s, recv timeout, " \
-				"recv offset: %d, expect length: %d", \
-				__LINE__, pTask->client_ip, \
-				pTask->offset, pTask->length);
-
-			task_finish_clean_up(pTask);
-		}
+        {
+            logError("file: "__FILE__", line: %d, "
+                    "client ip: %s, recv timeout, "
+                    "recv offset: %d, expect length: %d, "
+                    "req_count: %"PRId64, __LINE__, pTask->client_ip,
+                    pTask->offset, pTask->length, pTask->req_count);
+            task_finish_clean_up(pTask);
+        }
 
 		return;
 	}
@@ -512,7 +524,7 @@ static void client_sock_write(int sock, short event, void *arg)
 					return;
 				}
 
-				/*  reponse done, try to recv again */
+				/*  response done, try to recv again */
 				pClientInfo->total_length = 0;
 				pClientInfo->total_offset = 0;
 				pTask->offset = 0;

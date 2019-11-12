@@ -19,13 +19,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include "fdfs_define.h"
-#include "base64.h"
-#include "logger.h"
+#include "fastcommon/base64.h"
+#include "fastcommon/logger.h"
 #include "fdfs_global.h"
-#include "sockopt.h"
-#include "shared_func.h"
-#include "pthread_func.h"
-#include "sched_thread.h"
+#include "fastcommon/sockopt.h"
+#include "fastcommon/shared_func.h"
+#include "fastcommon/pthread_func.h"
+#include "fastcommon/sched_thread.h"
 #include "tracker_types.h"
 #include "tracker_global.h"
 #include "tracker_mem.h"
@@ -34,7 +34,7 @@
 #include "tracker_nio.h"
 #include "tracker_relationship.h"
 #include "fdfs_shared_func.h"
-#include "ioevent_loop.h"
+#include "fastcommon/ioevent_loop.h"
 #include "tracker_service.h"
 
 #define PKG_LEN_PRINTF_FORMAT  "%d"
@@ -382,13 +382,15 @@ static int tracker_check_and_sync(struct fast_task_info *pTask, \
 		leader_index = g_tracker_servers.leader_index;
 		if (leader_index >= 0)
 		{
-			ConnectionInfo *pTServer;
+			TrackerServerInfo *pTServer;
+			ConnectionInfo *conn;
 			pTServer = g_tracker_servers.servers + leader_index;
-			snprintf(pDestServer->id, FDFS_STORAGE_ID_MAX_SIZE, \
-				"%s", pTServer->ip_addr);
-			memcpy(pDestServer->ip_addr, pTServer->ip_addr, \
+            conn = pTServer->connections;
+			snprintf(pDestServer->id, FDFS_STORAGE_ID_MAX_SIZE,
+				"%s", conn->ip_addr);
+			memcpy(pDestServer->ip_addr, conn->ip_addr,
 				IP_ADDRESS_SIZE);
-			int2buff(pTServer->port, pDestServer->port);
+			int2buff(conn->port, pDestServer->port);
 		}
 		pDestServer++;
 
@@ -409,11 +411,11 @@ static int tracker_check_and_sync(struct fast_task_info *pTask, \
 		if (pServer != NULL)
 		{
 			pDestServer->status = pServer->status;
-			memcpy(pDestServer->id, pServer->id, \
+			memcpy(pDestServer->id, pServer->id,
 				FDFS_STORAGE_ID_MAX_SIZE);
-			memcpy(pDestServer->ip_addr, pServer->ip_addr, \
+			memcpy(pDestServer->ip_addr, FDFS_CURRENT_IP_ADDR(pServer),
 				IP_ADDRESS_SIZE);
-			int2buff(pClientInfo->pGroup->storage_port, \
+			int2buff(pClientInfo->pGroup->storage_port,
 				pDestServer->port);
 		}
 		pDestServer++;
@@ -434,11 +436,11 @@ static int tracker_check_and_sync(struct fast_task_info *pTask, \
 			ppServer<ppEnd; ppServer++)
 		{
 			pDestServer->status = (*ppServer)->status;
-			memcpy(pDestServer->id, (*ppServer)->id, \
+			memcpy(pDestServer->id, (*ppServer)->id,
 				FDFS_STORAGE_ID_MAX_SIZE);
-			memcpy(pDestServer->ip_addr, (*ppServer)->ip_addr, \
+			memcpy(pDestServer->ip_addr, FDFS_CURRENT_IP_ADDR(*ppServer),
 				IP_ADDRESS_SIZE);
-			int2buff(pClientInfo->pGroup->storage_port, \
+			int2buff(pClientInfo->pGroup->storage_port,
 				pDestServer->port);
 			pDestServer++;
 		}
@@ -968,7 +970,7 @@ static int tracker_deal_commit_next_leader(struct fast_task_info *pTask)
 	}
 
 	g_tracker_servers.leader_index = server_index;
-    g_next_leader_index = -1;
+	g_next_leader_index = -1;
 	if (leader.port == g_server_port && is_local_host_ip(leader.ip_addr))
 	{
 		g_if_leader_self = true;
@@ -1052,7 +1054,7 @@ static int tracker_deal_server_get_storage_status(struct fast_task_info *pTask)
 	pDest = (FDFSStorageBrief *)(pTask->data + sizeof(TrackerHeader));
 	memset(pDest, 0, sizeof(FDFSStorageBrief));
 	strcpy(pDest->id, pStorage->id);
-	strcpy(pDest->ip_addr, pStorage->ip_addr);
+	strcpy(pDest->ip_addr, pStorage->ip_addrs.ips[0]);
 	pDest->status = pStorage->status;
 	int2buff(pGroup->storage_port, pDest->port);
 
@@ -1129,6 +1131,65 @@ static int tracker_deal_get_storage_id(struct fast_task_info *pTask)
 	memcpy(pTask->data + sizeof(TrackerHeader), storage_id, id_len);
 
 	return 0;
+}
+
+static int tracker_deal_get_my_ip(struct fast_task_info *pTask)
+{
+	char group_name[FDFS_GROUP_NAME_MAX_LEN + 1];
+	int nPkgLen;
+    int body_len;
+
+	nPkgLen = pTask->length - sizeof(TrackerHeader);
+	if (nPkgLen != FDFS_GROUP_NAME_MAX_LEN)
+	{
+		logError("file: "__FILE__", line: %d, "
+			"cmd=%d, client ip addr: %s, "
+			"package size %d is not correct, "
+            "expect length: %d", __LINE__,
+			TRACKER_PROTO_CMD_STORAGE_GET_MY_IP,
+			pTask->client_ip, nPkgLen, FDFS_GROUP_NAME_MAX_LEN);
+		pTask->length = sizeof(TrackerHeader);
+		return EINVAL;
+	}
+
+	memcpy(group_name, pTask->data + sizeof(TrackerHeader),
+			FDFS_GROUP_NAME_MAX_LEN);
+	*(group_name + FDFS_GROUP_NAME_MAX_LEN) = '\0';
+	if (g_use_storage_id)
+	{
+        FDFSStorageIdInfo *pFDFSStorageIdInfo;
+		pFDFSStorageIdInfo = fdfs_get_storage_id_by_ip(group_name,
+						pTask->client_ip);
+		if (pFDFSStorageIdInfo == NULL)
+		{
+			logWarning("file: "__FILE__", line: %d, "
+				"cmd=%d, client ip addr: %s, "
+				"group_name: %s, storage ip not exist "
+                "in storage_ids.conf", __LINE__,
+                TRACKER_PROTO_CMD_STORAGE_GET_MY_IP,
+				pTask->client_ip, group_name);
+
+            body_len = strlen(pTask->client_ip);
+            memcpy(pTask->data + sizeof(TrackerHeader),
+                    pTask->client_ip, body_len);
+		}
+        else
+        {
+            body_len = fdfs_multi_ips_to_string(
+                    &pFDFSStorageIdInfo->ip_addrs,
+                    pTask->data + sizeof(TrackerHeader),
+                    pTask->size - sizeof(TrackerHeader));
+        }
+	}
+	else
+	{
+        body_len = strlen(pTask->client_ip);
+        memcpy(pTask->data + sizeof(TrackerHeader),
+                pTask->client_ip, body_len);
+	}
+
+	pTask->length = sizeof(TrackerHeader) + body_len;
+    return 0;
 }
 
 static int tracker_deal_get_storage_group_name(struct fast_task_info *pTask)
@@ -1211,6 +1272,7 @@ static int tracker_deal_fetch_storage_ids(struct fast_task_info *pTask)
 	int *pCurrentCount;
 	int nPkgLen;
 	int start_index;
+    char ip_str[256];
 
 	if (!g_use_storage_id)
 	{
@@ -1235,7 +1297,7 @@ static int tracker_deal_fetch_storage_ids(struct fast_task_info *pTask)
 	}
 
 	start_index = buff2int(pTask->data + sizeof(TrackerHeader));
-	if (start_index < 0 || start_index >= g_storage_id_count)
+	if (start_index < 0 || start_index >= g_storage_ids_by_id.count)
 	{
 		logError("file: "__FILE__", line: %d, " \
 			"client ip addr: %s, invalid offset: %d", \
@@ -1245,13 +1307,13 @@ static int tracker_deal_fetch_storage_ids(struct fast_task_info *pTask)
 	}
 
 	p = pTask->data + sizeof(TrackerHeader);
-	int2buff(g_storage_id_count, p);
+	int2buff(g_storage_ids_by_id.count, p);
 	p += sizeof(int);
 	pCurrentCount = (int *)p;
 	p += sizeof(int);
 
-	pIdsStart = g_storage_ids_by_ip + start_index;
-	pIdsEnd = g_storage_ids_by_ip + g_storage_id_count;
+	pIdsStart = g_storage_ids_by_id.ids + start_index;
+	pIdsEnd = g_storage_ids_by_id.ids + g_storage_ids_by_id.count;
 	for (pIdInfo = pIdsStart; pIdInfo < pIdsEnd; pIdInfo++)
 	{
         char szPortPart[16];
@@ -1268,8 +1330,11 @@ static int tracker_deal_fetch_storage_ids(struct fast_task_info *pTask)
         {
             *szPortPart = '\0';
         }
+
+        fdfs_multi_ips_to_string(&pIdInfo->ip_addrs,
+                ip_str, sizeof(ip_str));
 		p += sprintf(p, "%s %s %s%s\n", pIdInfo->id,
-			pIdInfo->group_name, pIdInfo->ip_addr, szPortPart);
+			pIdInfo->group_name, ip_str, szPortPart);
 	}
 
 	int2buff((int)(pIdInfo - pIdsStart), (char *)pCurrentCount);
@@ -1321,10 +1386,9 @@ static int tracker_deal_storage_join(struct fast_task_info *pTask)
 {
 	TrackerStorageJoinBodyResp *pJoinBodyResp;
 	TrackerStorageJoinBody *pBody;
-	ConnectionInfo *pTrackerServer;
-	ConnectionInfo *pTrackerEnd;
+	TrackerServerInfo *pTrackerServer;
+	TrackerServerInfo *pTrackerEnd;
 	char *p;
-	char *pSeperator;
 	FDFSStorageJoinBody joinBody;
 	int result;
 	TrackerClientInfo *pClientInfo;
@@ -1364,7 +1428,7 @@ static int tracker_deal_storage_join(struct fast_task_info *pTask)
 
 	if (pTask->length - sizeof(TrackerHeader) != \
 		sizeof(TrackerStorageJoinBody) + joinBody.tracker_count *\
-		FDFS_PROTO_IP_PORT_SIZE)
+		FDFS_PROTO_MULTI_IP_PORT_SIZE)
 	{
 		logError("file: "__FILE__", line: %d, " \
 			"cmd: %d, client ip: %s, " \
@@ -1374,7 +1438,7 @@ static int tracker_deal_storage_join(struct fast_task_info *pTask)
 			pTask->client_ip, pTask->length - \
 			(int)sizeof(TrackerHeader),
 			(int)sizeof(TrackerStorageJoinBody) + \
-			joinBody.tracker_count * FDFS_PROTO_IP_PORT_SIZE);
+			joinBody.tracker_count * FDFS_PROTO_MULTI_IP_PORT_SIZE);
 		pTask->length = sizeof(TrackerHeader);
 		return EINVAL;
 	}
@@ -1438,28 +1502,20 @@ static int tracker_deal_storage_join(struct fast_task_info *pTask)
 	}
 
 	p = pTask->data+sizeof(TrackerHeader)+sizeof(TrackerStorageJoinBody);
-	pTrackerEnd = joinBody.tracker_servers + \
-		      joinBody.tracker_count;
-	for (pTrackerServer=joinBody.tracker_servers; \
+	pTrackerEnd = joinBody.tracker_servers + joinBody.tracker_count;
+	for (pTrackerServer=joinBody.tracker_servers;
 		pTrackerServer<pTrackerEnd; pTrackerServer++)
 	{
-		* (p + FDFS_PROTO_IP_PORT_SIZE - 1) = '\0';
-		if ((pSeperator=strchr(p, ':')) == NULL)
-		{
-			logError("file: "__FILE__", line: %d, " \
-				"client ip: %s, invalid tracker server ip " \
-				"and port: %s", __LINE__, pTask->client_ip, p);
-			pTask->length = sizeof(TrackerHeader);
-			return EINVAL;
-		}
+		* (p + FDFS_PROTO_MULTI_IP_PORT_SIZE - 1) = '\0';
 
-		*pSeperator = '\0';
-		snprintf(pTrackerServer->ip_addr, \
-			sizeof(pTrackerServer->ip_addr), "%s", p);
-		pTrackerServer->port = atoi(pSeperator + 1);
-		pTrackerServer->sock = -1;
+        if ((result=fdfs_parse_server_info_ex(p, FDFS_TRACKER_SERVER_DEF_PORT,
+                pTrackerServer, false)) != 0)
+        {
+            pTask->length = sizeof(TrackerHeader);
+            return result;
+        }
 
-		p += FDFS_PROTO_IP_PORT_SIZE;
+		p += FDFS_PROTO_MULTI_IP_PORT_SIZE;
 	}
 
 	joinBody.upload_priority = (int)buff2long(pBody->upload_priority);
@@ -1473,12 +1529,23 @@ static int tracker_deal_storage_join(struct fast_task_info *pTask)
 	joinBody.init_flag = pBody->init_flag;
 	joinBody.status = pBody->status;
 
-	getSockIpaddr(pTask->event.fd, \
+    pBody->current_tracker_ip[IP_ADDRESS_SIZE - 1] = '\0';
+
+	getSockIpaddr(pTask->event.fd,
 		tracker_ip, IP_ADDRESS_SIZE);
 	insert_into_local_host_ip(tracker_ip);
 
-	result = tracker_mem_add_group_and_storage(pClientInfo, \
-			pTask->client_ip, &joinBody, true);
+    if (strcmp(tracker_ip, pBody->current_tracker_ip) != 0)
+    {
+		logInfo("file: "__FILE__", line: %d, "
+                "storage ip: %s, tracker ip by socket: %s, "
+                "tracker ip by report: %s", __LINE__, pTask->client_ip,
+                tracker_ip, pBody->current_tracker_ip);
+        insert_into_local_host_ip(pBody->current_tracker_ip);
+    }
+
+    result = tracker_mem_add_group_and_storage(pClientInfo,
+            pTask->client_ip, &joinBody, true);
 	if (result != 0)
 	{
 		pTask->length = sizeof(TrackerHeader);
@@ -2288,7 +2355,7 @@ static int tracker_deal_server_list_group_storages(struct fast_task_info *pTask)
 		pStorageStat = &((*ppServer)->stat);
 		pDest->status = (*ppServer)->status;
 		strcpy(pDest->id, (*ppServer)->id);
-		strcpy(pDest->ip_addr, (*ppServer)->ip_addr);
+		strcpy(pDest->ip_addr, FDFS_CURRENT_IP_ADDR(*ppServer));
 		if ((*ppServer)->psync_src_server != NULL)
 		{
 			strcpy(pDest->src_id, \
@@ -2494,7 +2561,8 @@ static int tracker_deal_service_query_fetch_update( \
 	p  = pTask->data + sizeof(TrackerHeader);
 	memcpy(p, pGroup->group_name, FDFS_GROUP_NAME_MAX_LEN);
 	p += FDFS_GROUP_NAME_MAX_LEN;
-	memcpy(p, ppStoreServers[0]->ip_addr, IP_ADDRESS_SIZE-1);
+	strcpy(p, fdfs_get_ipaddr_by_peer_ip(
+                &ppStoreServers[0]->ip_addrs, pTask->client_ip));
 	p += IP_ADDRESS_SIZE - 1;
 	long2buff(pGroup->storage_port, p);
 	p += FDFS_PROTO_PKG_LEN_SIZE;
@@ -2505,8 +2573,8 @@ static int tracker_deal_service_query_fetch_update( \
 		for (ppServer=ppStoreServers+1; ppServer<ppServerEnd; \
 				ppServer++)
 		{
-			memcpy(p, (*ppServer)->ip_addr, \
-					IP_ADDRESS_SIZE - 1);
+			strcpy(p, fdfs_get_ipaddr_by_peer_ip(
+                        &(*ppServer)->ip_addrs, pTask->client_ip));
 			p += IP_ADDRESS_SIZE - 1;
 		}
 	}
@@ -2882,7 +2950,8 @@ static int tracker_deal_service_query_storage( \
 		for (ppServer=pStoreGroup->active_servers; ppServer<ppEnd; \
 			ppServer++)
 		{
-			memcpy(p, (*ppServer)->ip_addr, IP_ADDRESS_SIZE - 1);
+			strcpy(p, fdfs_get_ipaddr_by_peer_ip(
+                        &(*ppServer)->ip_addrs, pTask->client_ip));
 			p += IP_ADDRESS_SIZE - 1;
 
 			long2buff(pStoreGroup->storage_port, p);
@@ -2891,7 +2960,8 @@ static int tracker_deal_service_query_storage( \
 	}
 	else
 	{
-		memcpy(p, pStorageServer->ip_addr, IP_ADDRESS_SIZE - 1);
+		strcpy(p, fdfs_get_ipaddr_by_peer_ip(
+                    &pStorageServer->ip_addrs, pTask->client_ip));
 		p += IP_ADDRESS_SIZE - 1;
 
 		long2buff(pStoreGroup->storage_port, p);
@@ -2899,7 +2969,6 @@ static int tracker_deal_service_query_storage( \
 	}
 
 	*p++ = (char)write_path_index;
-
 	pTask->length = p - pTask->data;
 
 	return 0;
@@ -3799,6 +3868,9 @@ int tracker_deal_task(struct fast_task_info *pTask)
 			break;
 		case TRACKER_PROTO_CMD_STORAGE_GET_SERVER_ID:
 			result = tracker_deal_get_storage_id(pTask);
+			break;
+		case TRACKER_PROTO_CMD_STORAGE_GET_MY_IP:
+			result = tracker_deal_get_my_ip(pTask);
 			break;
 		case TRACKER_PROTO_CMD_STORAGE_GET_GROUP_NAME:
 			result = tracker_deal_get_storage_group_name(pTask);
